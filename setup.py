@@ -15,9 +15,12 @@ setup(
                   ['caes-sync-daemon = caes.sync:sync']},
 
     install_requires=[
-        'argparse==1.2.1',
         'cassandra-driver==2.1.4',
         'elasticsearch==1.4.0',
+        'PyYAML==3.11' ,
+        'blist==1.3.6',
         'python-daemon'
-    ]
+    ],
+
+    test_suite='caes.test'
 )

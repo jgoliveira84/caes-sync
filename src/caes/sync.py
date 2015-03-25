@@ -3,8 +3,12 @@
 
 import time
 import logging
+import yaml
 
+from logging.config import dictConfig
 from daemon import runner
+from os.path import exists, expanduser, join
+from os import getcwd
 from caes.client import CassandraClient, ElasticSearchClient
 
 
@@ -23,15 +27,16 @@ class Sync(object):
         last = 0
 
         for e in elatest:
-            self._cclient.write(e)
+            data, did, ts = self._eclient.prepare_for_writing(e)
+            self._cclient.write(data, did, ts)
 
         for c in clatest:
-            data, did, ts = self._cclient.get_by_timeseries_entry(c)
+            data, did, ts = self._cclient.prepare_for_writing(c)
             self._eclient.write(data, did, ts)
 
 
 class App(object):
-    def __init__(self, eclient, cclient, interval):
+    def __init__(self):
         self.__logger = logging.getLogger(__name__)
 
         self.stdin_path = '/dev/null'
@@ -40,30 +45,72 @@ class App(object):
         self.pidfile_path = '/tmp/caes.pid'
         self.pidfile_timeout = 5
 
-        self._eclient = eclient
-        self._cclient = cclient
-        self._interval = interval
+    def _config(self):
+        config_dict = None
+
+        if exists(expanduser("~/.caes/config.yaml")):
+            config_path = expanduser("~/.caes/config.yaml")
+        else:
+            raise ValueError("Config file not found!!!")
+
+        print "Config file found at %s" % config_path
+
+        with open(config_path) as f:
+            config_dict = yaml.load(f)
+
+        logging.config.dictConfig(config_dict['logging'])
+
+        interval = config_dict.get('interval') if config_dict.get('interval') is not None else 10
+
+        es_config_dict = config_dict['ElasticSearchConfig']
+        eclient = self._config_es(es_config_dict)
+
+        cassandra_config_dict = config_dict['CassandraConfig']
+        cclient = self._config_cassandra(cassandra_config_dict)
+
+        return eclient, cclient, interval
+
+    def _config_es(self, es_config_dict):
+        index = es_config_dict['index']
+        doc_type = es_config_dict['type']
+
+        driver = es_config_dict['driver'] if es_config_dict.get('driver') is not None else dict()
+
+        return ElasticSearchClient(index, doc_type, es_driver_params=driver)
+
+    def _config_cassandra(self, cassandra_config_dict):
+        keyspace = cassandra_config_dict['keyspace']
+        data_column_family = cassandra_config_dict['dataColumnFamily']
+        driver = cassandra_config_dict['driver'] if cassandra_config_dict.get('driver') is not None else dict()
+
+        casskw = dict()
+        if cassandra_config_dict.get('timeseriesColumnFamily') is not None:
+            casskw['timeseries_column_family'] = cassandra_config_dict['timeseriesColumnFamily']
+
+        if cassandra_config_dict.get('dataIdFieldName') is not None:
+            casskw['data_id_field_name'] = cassandra_config_dict['dataIdFieldName']
+
+        if cassandra_config_dict.get('exclude') is not None:
+            casskw['exclude'] = cassandra_config_dict['exclude']
+
+        if cassandra_config_dict.get('include') is not None:
+            casskw['include'] = cassandra_config_dict['include']
+
+        return CassandraClient(keyspace, data_column_family, cassandra_driver_params=driver, **casskw)
 
     def run(self):
-        s = Sync(self._eclient, self._cclient)
+        eclient, cclient, interval = self._config()
+        s = Sync(eclient, cclient)
 
-        last = 0
+        last = int(time.time())
+        print "Syncing starting from %d" % last
         while True:
             new_last = int(time.time())
             s.sync(last)
-            last = 0
-            time.sleep(self._interval)
+            last = new_last
+            time.sleep(interval)
 
 def sync():
-    FORMAT = '%(asctime)-15s %(message)s'
-    logging.basicConfig(format=FORMAT, level=logging.DEBUG)
-
-    eclient = ElasticSearchClient('data3')
-    cclient = CassandraClient('demo',
-                              'data2',
-                              timeseries_column_family='ts2',
-                              data_id_field_name='did')
-
-    app = App(eclient, cclient, 10)
+    app = App()
     daemon_runner = runner.DaemonRunner(app)
     daemon_runner.do_action()

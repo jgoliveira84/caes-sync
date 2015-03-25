@@ -2,13 +2,18 @@
 
 import json
 import logging
-from uuid import UUID
 
+from uuid import UUID
 from cassandra import OperationTimedOut, InvalidRequest, Timeout
 from cassandra.query import dict_factory
 from elasticsearch import Elasticsearch
 from cassandra.cluster import Cluster
+from elasticsearch.client.indices import IndicesClient
 from elasticsearch.exceptions import ImproperlyConfigured, ElasticsearchException
+
+
+_CASSANDRA_TIMESERIES_ID_FIELD_NAME = 'id'
+_CASSANDRA_TIMESTAMP_FIELD_NAME = 'timestamp'
 
 
 class CassandraClient(object):
@@ -17,47 +22,25 @@ class CassandraClient(object):
                  data_column_family,
                  timeseries_column_family='ts',
                  data_id_field_name='id',
+                 cassandra_driver_params=dict(),
+                 exclude=None,
+                 include=None
     ):
         self.__logger = logging.getLogger(__name__)
-        self.__cluster = Cluster()
 
+        self._cluster = Cluster()
         self._keyspace = keyspace
         self._timeseries_column_family = timeseries_column_family
-        self._timeseries_id_field_name = 'id'
+        self._timeseries_id_field_name = _CASSANDRA_TIMESERIES_ID_FIELD_NAME
         self._data_column_family = data_column_family
-        self._timestamp_field_name = 'timestamp'
+        self._timestamp_field_name = _CASSANDRA_TIMESTAMP_FIELD_NAME
         self._data_id_field_name = data_id_field_name
+        self._exclude = exclude
+        self._include = include
 
-    def latest(self, since):
-        results = []
-
-        query = """
-            SELECT *
-            FROM %s
-            WHERE %s > %d
-            AND %s = 0
-        """ % (self._timeseries_column_family,
-               self._timestamp_field_name,
-               since,
-               self._timeseries_id_field_name)
-
-        self.__logger.debug(query)
-
-        try:
-            session = self.__cluster.connect(self._keyspace)
-            session.row_factory = dict_factory
-            results = session.execute(query)
-            session.shutdown()
-        except (OperationTimedOut, Timeout, InvalidRequest) as e:
-            self.__logger.exception(e)
-        except:
-            raise
-
-        return results
-
-    def get_by_timeseries_entry(self, tsentry):
+    def _get_by_timeseries_entry(self, tsentry):
         did = tsentry.pop(self._data_id_field_name)
-        ts = tsentry.pop(self._timeseries_id_field_name)
+        ts = tsentry.pop(self._timestamp_field_name)
 
         results = []
 
@@ -71,7 +54,7 @@ class CassandraClient(object):
         self.__logger.debug(query)
 
         try:
-            session = self.__cluster.connect(self._keyspace)
+            session = self._cluster.connect(self._keyspace)
             session.row_factory = dict_factory
             prepared = session.prepare(query)
             results = session.execute(prepared, (did,))
@@ -82,22 +65,70 @@ class CassandraClient(object):
             raise
 
         if len(results) == 0:
-            self.__logger.warning("Doc %s does not exist.", str(docid))
-            return
+            self.__logger.warning("Doc %s does not exist.", str(did))
+            res = None
+        else:
+            res = results[0]
+            res.pop(self._data_id_field_name)
 
-        res = results[0]
-        res.pop(self._data_id_field_name)
+            res_list = None
+            if self._include is not None:
+                res_list = [(k, v) for k, v in res.iteritems() if k in self._include]
+            elif self._exclude is not None:
+                res_list = [(k, v) for k, v in res.iteritems() if k not in self._exclude]
 
-        return results[0], did, ts
+            if res_list is not None:
+                res = dict(res_list)
 
-    def write(self, esdata):
-        fields = esdata['_source']
-        ts = esdata['_version']
-        did = UUID(esdata['_id'])
+        return res, did, ts
 
-        kv = zip(*fields.iteritems())
+    def latest(self, since):
+        results = []
 
-        self.__logger.debug("Syncing from ES to Cassandra: %s", json.dumps(esdata))
+        self.__logger.info('Querying Cassandra for updates...')
+
+        query = """
+            SELECT *
+            FROM %s
+            WHERE %s > %d
+            AND %s = 0
+        """ % (self._timeseries_column_family,
+               self._timestamp_field_name,
+               since,
+               self._timeseries_id_field_name)
+
+        self.__logger.info(query)
+
+        try:
+            session = self._cluster.connect(self._keyspace)
+            session.row_factory = dict_factory
+            results = session.execute(query)
+            session.shutdown()
+        except (OperationTimedOut, Timeout, InvalidRequest) as e:
+            self.__logger.exception(e)
+        except:
+            raise
+
+        self.__logger.info('Cassandra: %s', results)
+
+        return results
+
+    def flush(self):
+        pass
+
+    def prepare_for_writing(self, cassdata):
+        return self._get_by_timeseries_entry(cassdata)
+
+
+    def write(self, data, did, ts):
+        if data is None:
+            self.__warning.info("Data is None for id %s. Can't sync.", str(did))
+
+        kv = zip(*data.iteritems())
+
+        print kv
+
+        self.__logger.info("Syncing from ES to Cassandra: %s", json.dumps(data))
 
         params = dict(keyspace=self._keyspace,
                       ts_family=self._timeseries_column_family,
@@ -111,14 +142,14 @@ class CassandraClient(object):
         query = """
             BEGIN BATCH
                 INSERT INTO %(ts_family)s (%(ts_id_name)s, %(ts_field_name)s, %(did_name)s) VALUES (?, ?, ?)
-                INSERT INTO %(dt_family)s (did, %(data_columns)s) VALUES (?, %(data_values)s)
+                INSERT INTO %(dt_family)s (%(did_name)s, %(data_columns)s) VALUES (?, %(data_values)s)
             APPLY BATCH;
         """ % params
 
         self.__logger.debug(query)
 
         try:
-            session = self.__cluster.connect(self._keyspace)
+            session = self._cluster.connect(self._keyspace)
             prepared = session.prepare(query)
             session.execute(prepared, (0, ts, did) + (did, ) + tuple(kv[1]))
             session.shutdown()
@@ -127,24 +158,30 @@ class CassandraClient(object):
         except:
             raise
 
+    def close(self):
+        pass
+
 
 class ElasticSearchClient(object):
     def __init__(self,
-                 index):
+                 index,
+                 doc_type,
+                 es_driver_params=dict()):
         self.__logger = logging.getLogger(__name__)
 
         self._index = index
+        self._doc_type = doc_type
         self._timestamp_field_name = '_timestamp'
+        self._data_id_field_name = '_id'
+        self._es = Elasticsearch(**es_driver_params)
 
-        self.data_id_field_name = '_id'
-
-        self._es = Elasticsearch()
+        self._iclient = IndicesClient(self._es)
 
     def latest(self, since):
         results = []
         query = {"query": {"constant_score": {"filter": {"range": {self._timestamp_field_name: {"gte": since}}}}}}
 
-        self.__logger.info('Querying..')
+        self.__logger.info('Querying Elastic Search for updates...')
 
         try:
             results = self._es.search(index=self._index,
@@ -155,13 +192,36 @@ class ElasticSearchClient(object):
         except:
             raise
 
+        self.__logger.info('Elastic Search: %s', results)
+
         return results
 
-    def write(self,
-              cassdata,
-              did,
-              timestamp):
-        self.__logger.debug("Syncing from ES to Cassandra: %s", json.dumps(cassdata))
+    def flush(self):
+        self._iclient.flush(index=self._index)
 
-        self._es.index(self._index, 'tweet', cassdata, did, timestamp=timestamp)
+    def prepare_for_writing(self, esdata):
+        data = esdata['_source']
+        ts = esdata['_version']
+        did = UUID(esdata['_id'])
+
+        return data, did, ts
+
+    def write(self, data, did, timestamp):
+        if data is None:
+            self.__logger.warning("Data is None for id %s. Can't sync.", str(did))
+            return
+
+        self.__logger.info("Syncing from Cassandra to ES: %s", json.dumps(data))
+
+        try:
+            self._es.index(self._index, self._doc_type, data, did, timestamp=timestamp, version=timestamp, version_type="external")
+        except (ImproperlyConfigured, ElasticsearchException) as e:
+            self.__logger.exception(e)
+        except:
+            raise
+
+    def close(self):
+        pass
+
+
 

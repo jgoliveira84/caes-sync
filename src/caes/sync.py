@@ -21,18 +21,20 @@ class Sync(object):
     def sync(self, since):
         self.__logger.info("Syncing since %d", since)
 
+        self._eclient.flush()
+        self._cclient.flush()
         elatest = self._eclient.latest(since)
         clatest = self._cclient.latest(since)
 
-        last = 0
+        self._cclient.write((self._eclient.prepare_for_writing(e) for e in elatest))
+        self._eclient.write((self._cclient.prepare_for_writing(c) for c in clatest))
 
-        for e in elatest:
-            data, did, ts = self._eclient.prepare_for_writing(e)
-            self._cclient.write(data, did, ts)
+    def __enter__(self):
+        return self
 
-        for c in clatest:
-            data, did, ts = self._cclient.prepare_for_writing(c)
-            self._eclient.write(data, did, ts)
+    def __exit__(self, type, value, tb):
+        self._eclient.close()
+        self._cclient.close()
 
 
 class App(object):
@@ -100,15 +102,20 @@ class App(object):
 
     def run(self):
         eclient, cclient, interval = self._config()
-        s = Sync(eclient, cclient)
 
         last = int(time.time())
+
         print "Syncing starting from %d" % last
-        while True:
-            new_last = int(time.time())
-            s.sync(last)
-            last = new_last
-            time.sleep(interval)
+
+        with Sync(eclient, cclient) as s:
+            while True:
+                new_last = int(time.time())
+                time.sleep(interval)
+                s.sync(last)
+                last = new_last
+
+
+
 
 def sync():
     app = App()

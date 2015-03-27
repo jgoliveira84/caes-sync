@@ -60,8 +60,8 @@ We also need to garantue consistency across both 'databases'. For this we will r
 
 ```shell
 $ curl -XPUT 'http://localhost:9200/<index>/<type>/ed31ee76-d49a-4c05-8f0a-6a856a94de8e?timestamp=1427254212&version=1427254212&version_type=external' -d '{
-    "user" : "kimchy",
-    "message" : "trying out Elasticsearch"
+    "user" : "jgoliveira84",
+    "message" : "Let's sync!!"
 }'
 ```
 

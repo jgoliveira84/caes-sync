@@ -3,7 +3,7 @@ Simple daemon to sync data between ElasticSearch and Cassandra.
 
 ## Installing
 
-Download this repository, go to its root and do:
+Download this repository, extract it, go to its root and do:
 ```shell 
 $ python setup.py install
 ```

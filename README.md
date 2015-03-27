@@ -104,13 +104,14 @@ You configure your Caes-Sync daemon by providing an [Yaml](http://yaml.org) file
 interval: 60
 
 ElasticSearchConfig:
-    index: data3
-    type: tweet
+    index: stream
+    type: log
 
 CassandraConfig:
-    keyspace: demo
-    dataColumnFamily: data2
-    timeseriesColumnFamily: ts2
+    keyspace: logs
+    dataColumnFamily: data
+    timeseriesColumnFamily: ts
+    timeseriesIdFieldName: id
     dataIdFieldName: did
     timestampFieldName: timestamp
 

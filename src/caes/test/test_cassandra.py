@@ -161,26 +161,28 @@ class CassandraClientTestCase(unittest.TestCase):
         prepared = session.prepare(query)
         session.execute(prepared, (0, t2, did2) + (did2, ) + tuple(kv2[1]))
 
-        results1 = self.cclient.latest(t1)
-        resultsm = self.cclient.latest(tm)
-        results2 = self.cclient.latest(t2)
+        self.cclient.flush()
+
         results3 = self.cclient.latest(t2 + 1)
+        results2 = self.cclient.latest(t2)
+        resultsm = self.cclient.latest(tm)
+        results1 = self.cclient.latest(t1)
 
         self.assertEqual(len(results1), 2)
         self.assertEqual(len(resultsm), 1)
         self.assertEqual(len(results2), 1)
         self.assertEqual(len(results3), 0)
 
-        dn = self.cclient._data_id_field_name
-
-        self.assertIn(did1, [data[dn] for data in results1])
-        self.assertNotIn(did1, [data[dn] for data in resultsm])
-        self.assertNotIn(did1, [data[dn] for data in results2])
-        self.assertNotIn(did1, [data[dn] for data in results3])
-        self.assertIn(did2, [data[dn] for data in results1])
-        self.assertIn(did2, [data[dn] for data in resultsm])
-        self.assertIn(did2, [data[dn] for data in results2])
+        self.assertIn(did1, [did for _, did, _ in results1])
+        self.assertNotIn(did1, [did for _, did, _ in resultsm])
+        self.assertNotIn(did1, [did for _, did, _ in results2])
+        self.assertNotIn(did1, [did for _, did, _ in results3])
+        self.assertIn(did2, [did for _, did, _ in results1])
+        self.assertIn(did2, [did for _, did, _ in resultsm])
+        self.assertIn(did2, [did for _, did, _ in results2])
         self.assertEqual(len(results3), 0)
+
+        session.shutdown()
 
 
 def test_suite():

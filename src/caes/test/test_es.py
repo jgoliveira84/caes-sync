@@ -79,23 +79,23 @@ class ElasticSearchClientTestCase(unittest.TestCase):
 
         self.eclient.flush()
 
-        results1 = self.eclient.latest(t1)
-        resultsm = self.eclient.latest(tm)
-        results2 = self.eclient.latest(t2)
-        results3 = self.eclient.latest(t2 + 1)
+        results3 = [r for r in self.eclient.latest(t2 + 1) if r[0] is not None]
+        results2 = [r for r in self.eclient.latest(t2) if r[0] is not None]
+        resultsm = [r for r in self.eclient.latest(tm) if r[0] is not None]
+        results1 = [r for r in self.eclient.latest(t1) if r[0] is not None]
 
         self.assertEqual(len(results1), 2)
         self.assertEqual(len(resultsm), 1)
         self.assertEqual(len(results2), 1)
         self.assertEqual(len(results3), 0)
 
-        self.assertIn(did1, [UUID(data['_id']) for data in results1])
-        self.assertNotIn(did1, [UUID(data['_id']) for data in resultsm])
-        self.assertNotIn(did1, [UUID(data['_id']) for data in results2])
-        self.assertNotIn(did1, [UUID(data['_id']) for data in results3])
-        self.assertIn(did2, [UUID(data['_id']) for data in results1])
-        self.assertIn(did2, [UUID(data['_id']) for data in resultsm])
-        self.assertIn(did2, [UUID(data['_id']) for data in results2])
+        self.assertIn(did1, [did for _, did, _ in results1])
+        self.assertNotIn(did1, [did for _, did, _ in resultsm])
+        self.assertNotIn(did1, [did for _, did, _ in results2])
+        self.assertNotIn(did1, [did for _, did, _ in results3])
+        self.assertIn(did2, [did for _, did, _ in results1])
+        self.assertIn(did2, [did for _, did, _ in resultsm])
+        self.assertIn(did2, [did for _, did, _ in results2])
         self.assertEqual(len(results3), 0)
 
 

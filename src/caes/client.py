@@ -12,39 +12,37 @@ from elasticsearch.client.indices import IndicesClient
 from elasticsearch.exceptions import ImproperlyConfigured, ElasticsearchException
 
 
-_CASSANDRA_TIMESERIES_ID_FIELD_NAME = 'id'
-_CASSANDRA_TIMESTAMP_FIELD_NAME = 'timestamp'
-_CASSANDRA_TIMESERIES_COLUMN_FAMILY = 'ts'
-_CASSANDRA_DATA_ID_FIELD_NAME = 'did'
-
-
 class CassandraClient(object):
     def __init__(self,
                  keyspace,
                  data_column_family,
-                 timeseries_column_family=_CASSANDRA_TIMESERIES_COLUMN_FAMILY,
-                 data_id_field_name=_CASSANDRA_DATA_ID_FIELD_NAME,
-                 cassandra_driver_params=dict(),
-                 exclude=None,
-                 include=None
+                 timeseries_column_family='ts',
+                 timeseries_id_field_name='id',
+                 data_id_field_name='did',
+                 timestamp_field_name='timestamp',
+                 cassandra_driver_params=dict()
     ):
         self.__logger = logging.getLogger(__name__)
 
         self._cluster = Cluster()
         self._keyspace = keyspace
         self._timeseries_column_family = timeseries_column_family
-        self._timeseries_id_field_name = _CASSANDRA_TIMESERIES_ID_FIELD_NAME
+        self._timeseries_id_field_name = timeseries_id_field_name
         self._data_column_family = data_column_family
-        self._timestamp_field_name = _CASSANDRA_TIMESTAMP_FIELD_NAME
+        self._timestamp_field_name = timestamp_field_name
         self._data_id_field_name = data_id_field_name
-        self._exclude = exclude
-        self._include = include
+
+        self.__last = []
 
     def _get_by_timeseries_entry(self, tsentry):
         did = tsentry.pop(self._data_id_field_name)
         ts = tsentry.pop(self._timestamp_field_name)
 
         results = []
+
+        if (did, ts) in self.__last:
+            self.__logger.debug("%s already synced.", str(did))
+            return None, did, ts
 
         query = """
             SELECT *
@@ -68,21 +66,12 @@ class CassandraClient(object):
 
         if len(results) == 0:
             self.__logger.warning("Doc %s does not exist.", str(did))
-            res = None
+            data = None
         else:
-            res = results[0]
-            res.pop(self._data_id_field_name)
+            data = results[0]
+            data.pop(self._data_id_field_name)
 
-            res_list = None
-            if self._include is not None:
-                res_list = [(k, v) for k, v in res.iteritems() if k in self._include]
-            elif self._exclude is not None:
-                res_list = [(k, v) for k, v in res.iteritems() if k not in self._exclude]
-
-            if res_list is not None:
-                res = dict(res_list)
-
-        return res, did, ts
+        return data, did, ts
 
     def latest(self, since):
         results = []
@@ -111,7 +100,9 @@ class CassandraClient(object):
         except:
             raise
 
-        self.__logger.info('Cassandra: %s', results)
+        results = [self.prepare_for_writing(r) for r in results]
+
+        self.__logger.info("Cassandra: %s", results)
 
         return results
 
@@ -130,9 +121,10 @@ class CassandraClient(object):
         except:
             raise
 
+        last_synced = []
         for data, did, ts in dlist:
             if data is None:
-                self.__warning.info("Data is None for id %s. Can't sync.", str(did))
+                self.__logger.info("Data is None for id %s. Can't sync.", str(did))
                 continue
 
             kv = zip(*data.iteritems())
@@ -165,6 +157,8 @@ class CassandraClient(object):
             except:
                 raise
 
+            last_synced.append((did, ts))
+
         try:
             session.shutdown()
         except (OperationTimedOut, Timeout) as e:
@@ -172,7 +166,7 @@ class CassandraClient(object):
         except:
             raise
 
-
+        self.__last = last_synced
 
     def close(self):
         self._cluster.shutdown()
@@ -182,7 +176,9 @@ class ElasticSearchClient(object):
     def __init__(self,
                  index,
                  doc_type,
-                 es_driver_params=dict()):
+                 es_driver_params=dict(),
+                 exclude=None,
+                 include=None):
         self.__logger = logging.getLogger(__name__)
 
         self._index = index
@@ -190,8 +186,12 @@ class ElasticSearchClient(object):
         self._timestamp_field_name = '_timestamp'
         self._data_id_field_name = '_id'
         self._es = Elasticsearch(**es_driver_params)
+        self._exclude = exclude
+        self._include = include
 
         self._iclient = self._es.indices
+
+        self.__last = []
 
     def latest(self, since):
         results = []
@@ -208,6 +208,8 @@ class ElasticSearchClient(object):
         except:
             raise
 
+        results = [self.prepare_for_writing(r) for r in results]
+
         self.__logger.info('Elastic Search: %s', results)
 
         return results
@@ -220,9 +222,23 @@ class ElasticSearchClient(object):
         ts = esdata['_version']
         did = UUID(esdata['_id'])
 
+        if (did, ts) in self.__last:
+            self.__logger.debug("%s already synced.", str(did))
+            return None, did, ts
+
+        res_list = None
+        if self._include is not None:
+            res_list = [(k, v) for k, v in data.iteritems() if k in self._include]
+        elif self._exclude is not None:
+            res_list = [(k, v) for k, v in data.iteritems() if k not in self._exclude]
+
+        if res_list is not None:
+            data = dict(res_list)
+
         return data, did, ts
 
     def write(self, dlist):
+        last_synced = []
         for data, did, ts in dlist:
             if data is None:
                 self.__logger.warning("Data is None for id %s. Can't sync.", str(did))
@@ -236,6 +252,10 @@ class ElasticSearchClient(object):
                 self.__logger.exception(e)
             except:
                 raise
+
+            last_synced.append((did, ts))
+
+        self.__last = last_synced
 
     def close(self):
         pass

@@ -84,17 +84,57 @@ class SyncTestCase(unittest.TestCase):
 
         return results[0] if len(results) > 0 else None
 
+    def _outside_write_to_cassandra(self, data, did, ts):
+        session = self.cclient._cluster.connect(self.keyspace)
+        params = dict(keyspace=self.keyspace,
+                      ts_family=self.cclient._timeseries_column_family,
+                      dt_family=self.cclient._data_column_family,
+                      ts_id_name=self.cclient._timeseries_id_field_name,
+                      did_name=self.cclient._data_id_field_name,
+                      ts_field_name=self.cclient._timestamp_field_name,
+                      data_columns=None,
+                      data_values=None)
+
+        kv = zip(*data.iteritems())
+
+        params['data_columns'] = ", ".join(kv[0])
+        params['data_values'] = ", ".join("?" for _ in range(len(kv[1])))
+
+        query = """
+            BEGIN BATCH
+                INSERT INTO %(ts_family)s (%(ts_id_name)s, %(ts_field_name)s, %(did_name)s) VALUES (?, ?, ?)
+                INSERT INTO %(dt_family)s (%(did_name)s, %(data_columns)s) VALUES (?, %(data_values)s)
+            APPLY BATCH;
+        """ % params
+
+        prepared = session.prepare(query)
+        session.execute(prepared, (0, ts, did) + (did, ) + tuple(kv[1]))
+
+        self.cclient.flush()
+
+        session.shutdown()
+
+    def _outside_write_to_elasticsearch(self, data, did, ts):
+        self.eclient._es.index(self.index,
+                               self.doc_type,
+                               data, did,
+                               timestamp=ts,
+                               version=ts,
+                               version_type="external")
+
+        self.eclient.flush()
+
     def test_simple_cassandra_to_es(self):
         datac = dict(vint=1, vstring="Hi")
         didc = uuid4()
         timestampc = 10
 
-        self.cclient.write([(datac, didc, timestampc)])
-        self.cclient.flush()
-
+        self._outside_write_to_cassandra(datac, didc, timestampc)
         self.sync.sync(9)
 
-        result = self.eclient._es.get(index=self.index, doc_type=self.doc_type, id=didc)
+        result = self.eclient._es.get(index=self.index,
+                                      doc_type=self.doc_type,
+                                      id=didc)
 
         self.assertIsNotNone(result)
         self.assertEqual(datac['vint'], result['_source']['vint'])
@@ -105,8 +145,7 @@ class SyncTestCase(unittest.TestCase):
         dide = uuid4()
         timestampe = 10
 
-        self.eclient.write([(datae, dide, timestampe)])
-        self.eclient.flush()
+        self._outside_write_to_elasticsearch(datae, dide, timestampe)
 
         self.sync.sync(9)
 
@@ -116,7 +155,32 @@ class SyncTestCase(unittest.TestCase):
         self.assertEqual(datae['vint'], result['vint'])
         self.assertEqual(datae['vstring'], result['vstring'])
 
+    def test_most_recent(self):
+        did = uuid4()
 
+        datae = dict(vint=99, vstring="The most recent!!")
+        timestampe = 11
+
+        datac = dict(vint=1, vstring="Hi")
+        timestampc = 10
+
+        self._outside_write_to_elasticsearch(datae, did, timestampe)
+        self._outside_write_to_cassandra(datac, did, timestampc)
+
+        self.sync.sync(9)
+
+        resultc = self._get_cassandra_row_by_id(did)
+        resulte = self.eclient._es.get(index=self.index,
+                                       doc_type=self.doc_type,
+                                       id=did)
+
+        self.assertIsNotNone(resultc)
+        self.assertEqual(datae['vint'], resultc['vint'])
+        self.assertEqual(datae['vstring'], resultc['vstring'])
+
+        self.assertIsNotNone(resulte)
+        self.assertEqual(datae['vint'], resulte['_source']['vint'])
+        self.assertEqual(datae['vstring'], resulte['_source']['vstring'])
 
 
 def test_suite():

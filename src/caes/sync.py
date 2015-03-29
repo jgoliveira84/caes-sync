@@ -26,8 +26,8 @@ class Sync(object):
         elatest = self._eclient.latest(since)
         clatest = self._cclient.latest(since)
 
-        self._cclient.write((self._eclient.prepare_for_writing(e) for e in elatest))
-        self._eclient.write((self._cclient.prepare_for_writing(c) for c in clatest))
+        self._cclient.write(e for e in elatest)
+        self._eclient.write(c for c in clatest)
 
     def __enter__(self):
         return self
@@ -78,7 +78,17 @@ class App(object):
 
         driver = es_config_dict['driver'] if es_config_dict.get('driver') is not None else dict()
 
-        return ElasticSearchClient(index, doc_type, es_driver_params=driver)
+        eskw = dict()
+        if es_config_dict.get('exclude') is not None:
+            eskw['exclude'] = es_config_dict['exclude']
+
+        if es_config_dict.get('include') is not None:
+            eskw['include'] = es_config_dict['include']
+
+        return ElasticSearchClient(index,
+                                   doc_type,
+                                   es_driver_params=driver,
+                                   **eskw)
 
     def _config_cassandra(self, cassandra_config_dict):
         keyspace = cassandra_config_dict['keyspace']
@@ -92,13 +102,16 @@ class App(object):
         if cassandra_config_dict.get('dataIdFieldName') is not None:
             casskw['data_id_field_name'] = cassandra_config_dict['dataIdFieldName']
 
-        if cassandra_config_dict.get('exclude') is not None:
-            casskw['exclude'] = cassandra_config_dict['exclude']
+        if cassandra_config_dict.get('timeseriesIdFieldName') is not None:
+            casskw['timeseries_id_field_name'] = cassandra_config_dict['timeseriesIdFieldName']
 
-        if cassandra_config_dict.get('include') is not None:
-            casskw['include'] = cassandra_config_dict['include']
+        if cassandra_config_dict.get('timestampFieldName') is not None:
+            casskw['timestamp_field_name'] = cassandra_config_dict['timestampFieldName']
 
-        return CassandraClient(keyspace, data_column_family, cassandra_driver_params=driver, **casskw)
+        return CassandraClient(keyspace,
+                               data_column_family,
+                               cassandra_driver_params=driver,
+                               **casskw)
 
     def run(self):
         eclient, cclient, interval = self._config()
@@ -113,8 +126,6 @@ class App(object):
                 time.sleep(interval)
                 s.sync(last)
                 last = new_last
-
-
 
 
 def sync():

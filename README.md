@@ -156,3 +156,35 @@ The type to use in ElasticSearch.
 
 A dictionary containing kwargs that will be passed to the [ElasticSearch Driver](https://elasticsearch-py.readthedocs.org/en/master/api.html#elasticsearch.Elasticsearch).
 
+#####CassandraConfig.keyspace
+
+The keyspace to use with Cassandra.
+
+#####CassandraConfig.dataColumnFamily
+
+The table on Cassandra where to put the main data in.
+
+#####CassandraConfig.timeseriesColumnFamily
+
+The table on Cassandra where to put the timeseries index in.
+
+#####CassandraConfig.timeseriesIdFieldName
+
+The name of the ID field on the *timeseriesColumnFamily*.
+
+#####CassandraConfig.dataIdFieldName
+
+The name of the ID field on the *dataColumnFamily* which is also referenced on the *timeseriesColumnFamily*.
+
+#####CassandraConfig.timestampFieldName
+
+The name of the timestamp field on the *timeseriesColumnFamily*.
+
+#####CassandraConfig.driver
+
+A dictionary containing kwargs that will be passed to the [Cassandra Driver](http://datastax.github.io/python-driver/api/cassandra/cluster.html#module-cassandra.cluster).
+
+
+
+
+

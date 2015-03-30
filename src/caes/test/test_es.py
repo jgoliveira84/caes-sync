@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 
 import unittest
 import time
@@ -6,6 +7,8 @@ import time
 from uuid import uuid4, UUID
 from caes.client import ElasticSearchClient
 from caes.test.utils import random_string
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class ElasticSearchClientTestCase(unittest.TestCase):
@@ -47,6 +50,30 @@ class ElasticSearchClientTestCase(unittest.TestCase):
         results = self.eclient._es.search(index=self.index, doc_type=self.doc_type)['hits']['hits']
 
         self.assertEqual(len(results), 1)
+
+    def test_exclude(self):
+        data = dict(f1=1, f2="Hi", exclude1="blah", exclude2="999")
+        did = uuid4()
+        timestamp = int(time.time())
+
+        self.eclient._exclude = ['exclude1', 'exclude2']
+
+        datar, didr, tsr = self.eclient._prepare_for_writing(dict(_source=data, _version=timestamp, _id=str(did)))
+
+        self.assertIsNotNone(datar)
+        self.assertIsNone(datar.get('exclude1'))
+
+    def test_include(self):
+        data = dict(f1=1, f2="Hi", exclude1="blah", exclude2="999")
+        did = uuid4()
+        timestamp = int(time.time())
+
+        self.eclient._include = ['f1', 'f2']
+
+        datar, didr, tsr = self.eclient._prepare_for_writing(dict(_source=data, _version=timestamp, _id=str(did)))
+
+        self.assertIsNotNone(datar)
+        self.assertIsNone(datar.get('exclude1'))
 
     def test_latest(self):
         data1 = dict(f1=1, f2="Hi")

@@ -16,6 +16,7 @@ class CassandraClient(object):
     def __init__(self,
                  keyspace,
                  data_column_family,
+                 insertQuery="",
                  timeseries_column_family='ts',
                  timeseries_id_field_name='id',
                  data_id_field_name='did',
@@ -31,6 +32,7 @@ class CassandraClient(object):
         self._data_column_family = data_column_family
         self._timestamp_field_name = timestamp_field_name
         self._data_id_field_name = data_id_field_name
+        self._insert_query = insertQuery
 
         self.__last = []
 
@@ -73,6 +75,9 @@ class CassandraClient(object):
 
         return data, did, ts
 
+    def _prepare_for_writing(self, cassdata):
+        return self._get_by_timeseries_entry(cassdata)
+
     def latest(self, since):
         results = []
 
@@ -100,7 +105,7 @@ class CassandraClient(object):
         except:
             raise
 
-        results = [self.prepare_for_writing(r) for r in results]
+        results = [self._prepare_for_writing(r) for r in results]
 
         self.__logger.info("Cassandra: %s", results)
 
@@ -108,9 +113,6 @@ class CassandraClient(object):
 
     def flush(self):
         pass
-
-    def prepare_for_writing(self, cassdata):
-        return self._get_by_timeseries_entry(cassdata)
 
     def write(self, dlist):
         try:
@@ -138,20 +140,32 @@ class CassandraClient(object):
                           did_name=self._data_id_field_name,
                           ts_field_name=self._timestamp_field_name,
                           data_columns=", ".join(kv[0]),
-                          data_values=", ".join("?" for _ in range(len(kv[0]))))
+                          data_values=", ".join("%(" + str(f) + ")s" for f in kv[0]))
+
+            insert_schema_ts = "INSERT INTO %(ts_family)s (%(ts_id_name)s, %(ts_field_name)s, %(did_name)s) " % params
+            insert_values_ts = "VALUES (0, %(ts)s, %(did)s) "
+            insert_ts = insert_schema_ts + insert_values_ts
+
+            insert_schema_data = "INSERT INTO %(dt_family)s (%(did_name)s, %(data_columns)s) " % params
+            insert_values_data = "VALUES (%(did)s, " + ("%(data_values)s) " % params)
+            insert_data = insert_schema_data + insert_values_data
 
             query = """
                 BEGIN BATCH
-                    INSERT INTO %(ts_family)s (%(ts_id_name)s, %(ts_field_name)s, %(did_name)s) VALUES (?, ?, ?)
-                    INSERT INTO %(dt_family)s (%(did_name)s, %(data_columns)s) VALUES (?, %(data_values)s)
+                    %s
+                    %s
+                    %s
                 APPLY BATCH;
-            """ % params
+            """ % (insert_ts, insert_data, self._insert_query)
 
             self.__logger.debug(query)
 
+            values_dict = dict(did=did, ts=ts)
+            for k, v in data.iteritems():
+                values_dict[k] = v
+
             try:
-                prepared = session.prepare(query)
-                session.execute(prepared, (0, ts, did) + (did, ) + tuple(kv[1]))
+                session.execute(query, values_dict)
             except (OperationTimedOut, Timeout, InvalidRequest) as e:
                 self.__logger.exception(e)
             except:
@@ -193,31 +207,7 @@ class ElasticSearchClient(object):
 
         self.__last = []
 
-    def latest(self, since):
-        results = []
-        query = {"query": {"constant_score": {"filter": {"range": {self._timestamp_field_name: {"gte": since}}}}}}
-
-        self.__logger.info('Querying Elastic Search for updates...')
-
-        try:
-            results = self._es.search(index=self._index,
-                                      body=query,
-                                      version=True)['hits']['hits']
-        except (ImproperlyConfigured, ElasticsearchException) as e:
-            self.__logger.exception(e)
-        except:
-            raise
-
-        results = [self.prepare_for_writing(r) for r in results]
-
-        self.__logger.info('Elastic Search: %s', results)
-
-        return results
-
-    def flush(self):
-        self._iclient.flush(index=self._index)
-
-    def prepare_for_writing(self, esdata):
+    def _prepare_for_writing(self, esdata):
         data = esdata['_source']
         ts = esdata['_version']
         did = UUID(esdata['_id'])
@@ -236,6 +226,41 @@ class ElasticSearchClient(object):
             data = dict(res_list)
 
         return data, did, ts
+
+    def latest(self, since):
+        results = []
+        query = {"query": {"constant_score": {"filter": {"range": {self._timestamp_field_name: {"gte": since}}}}}}
+
+        self.__logger.info('Querying Elastic Search for updates...')
+
+        try:
+            results = []
+            offset = 0
+            while True:
+                res = self._es.search(index=self._index,
+                                      body=query,
+                                      version=True,
+                                      from_=offset,
+                                      size=50)['hits']['hits']
+                if len(res) == 0:
+                    break
+
+                results.extend(res)
+                offset += 50
+
+        except (ImproperlyConfigured, ElasticsearchException) as e:
+            self.__logger.exception(e)
+        except:
+            raise
+
+        results = [self._prepare_for_writing(r) for r in results]
+
+        self.__logger.info('Elastic Search: %s', results)
+
+        return results
+
+    def flush(self):
+        self._iclient.flush(index=self._index)
 
     def write(self, dlist):
         last_synced = []

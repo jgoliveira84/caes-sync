@@ -94,6 +94,8 @@ class App(object):
         keyspace = cassandra_config_dict['keyspace']
         data_column_family = cassandra_config_dict['dataColumnFamily']
         driver = cassandra_config_dict['driver'] if cassandra_config_dict.get('driver') is not None else dict()
+        insert_query = cassandra_config_dict['insertQuery']
+        select_query = cassandra_config_dict['selectQuery']
 
         casskw = dict()
         if cassandra_config_dict.get('timeseriesColumnFamily') is not None:
@@ -110,6 +112,8 @@ class App(object):
 
         return CassandraClient(keyspace,
                                data_column_family,
+                               insert_query=insert_query,
+                               select_query=select_query,
                                cassandra_driver_params=driver,
                                **casskw)
 

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 
 import unittest
 import time
@@ -9,6 +10,7 @@ from caes.client import ElasticSearchClient, CassandraClient
 from caes.test.utils import random_string
 from caes.sync import Sync
 
+logging.basicConfig(level=logging.DEBUG)
 
 class SyncTestCase(unittest.TestCase):
     def tearDown(self):
@@ -46,12 +48,13 @@ class SyncTestCase(unittest.TestCase):
               %s int,
               timestamp int,
               %s uuid,
-              PRIMARY KEY(%s, timestamp)
+              PRIMARY KEY(%s, timestamp, %s)
             );
         """ % (self.cclient._timeseries_column_family,
                self.cclient._timeseries_id_field_name,
                self.cclient._data_id_field_name,
-               self.cclient._timeseries_id_field_name)
+               self.cclient._timeseries_id_field_name,
+               self.cclient._data_id_field_name)
 
         session.execute(query)
 
@@ -84,6 +87,11 @@ class SyncTestCase(unittest.TestCase):
 
         return results[0] if len(results) > 0 else None
 
+    def _get_elasticsearch_doc_by_id(self, did):
+        return self.eclient._es.get(index=self.index,
+                                    doc_type=self.doc_type,
+                                    id=did)
+
     def _outside_write_to_cassandra(self, data, did, ts):
         session = self.cclient._cluster.connect(self.keyspace)
         params = dict(keyspace=self.keyspace,
@@ -114,13 +122,16 @@ class SyncTestCase(unittest.TestCase):
 
         session.shutdown()
 
-    def _outside_write_to_elasticsearch(self, data, did, ts):
-        self.eclient._es.index(self.index,
-                               self.doc_type,
-                               data, did,
-                               timestamp=ts,
-                               version=ts,
-                               version_type="external")
+    def _outside_bulk_write_to_elasticsearch(self, dlist):
+        bulk = []
+        for data, did, ts in dlist:
+            bulk.append(dict(index=dict( _id=str(did), _timestamp=ts, _version=ts, _version_type="external")))
+            bulk.append(data)
+
+        self.eclient._es.bulk(body=bulk,
+                              index=self.index,
+                              doc_type=self.doc_type
+                              )
 
         self.eclient.flush()
 
@@ -130,11 +141,10 @@ class SyncTestCase(unittest.TestCase):
         timestampc = 10
 
         self._outside_write_to_cassandra(datac, didc, timestampc)
+
         self.sync.sync(9)
 
-        result = self.eclient._es.get(index=self.index,
-                                      doc_type=self.doc_type,
-                                      id=didc)
+        result = self._get_elasticsearch_doc_by_id(didc)
 
         self.assertIsNotNone(result)
         self.assertEqual(datac['vint'], result['_source']['vint'])
@@ -145,7 +155,7 @@ class SyncTestCase(unittest.TestCase):
         dide = uuid4()
         timestampe = 10
 
-        self._outside_write_to_elasticsearch(datae, dide, timestampe)
+        self._outside_bulk_write_to_elasticsearch([(datae, dide, timestampe)])
 
         self.sync.sync(9)
 
@@ -164,15 +174,13 @@ class SyncTestCase(unittest.TestCase):
         datac = dict(vint=1, vstring="Hi")
         timestampc = 10
 
-        self._outside_write_to_elasticsearch(datae, did, timestampe)
+        self._outside_bulk_write_to_elasticsearch([(datae, did, timestampe)])
         self._outside_write_to_cassandra(datac, did, timestampc)
 
         self.sync.sync(9)
 
         resultc = self._get_cassandra_row_by_id(did)
-        resulte = self.eclient._es.get(index=self.index,
-                                       doc_type=self.doc_type,
-                                       id=did)
+        resulte = self._get_elasticsearch_doc_by_id(did)
 
         self.assertIsNotNone(resultc)
         self.assertEqual(datae['vint'], resultc['vint'])
@@ -181,6 +189,56 @@ class SyncTestCase(unittest.TestCase):
         self.assertIsNotNone(resulte)
         self.assertEqual(datae['vint'], resulte['_source']['vint'])
         self.assertEqual(datae['vstring'], resulte['_source']['vstring'])
+
+    def test_big_cassandra_to_es(self):
+        docs = dict()
+        ts = int(time.time())
+        time.sleep(1)
+        for i in range(1000):
+            did = uuid4()
+            docs[did] = (dict(vint=i, vstring=str(i)), did, int(time.time()))
+            self._outside_write_to_cassandra(*docs[did])
+
+        self.sync.sync(ts)
+
+        for k, v in docs.iteritems():
+            result = self._get_elasticsearch_doc_by_id(k)
+            self.assertIsNotNone(result)
+            self.assertEqual(v[0]['vint'], result['_source']['vint'])
+            self.assertEqual(v[0]['vstring'], result['_source']['vstring'])
+
+    def test_big_es_to_cassandra(self):
+        docs = dict()
+        ts = int(time.time())
+        time.sleep(1)
+
+        for i in range(1000):
+            did = uuid4()
+            docs[did] = (dict(vint=i, vstring=str(i)), did, int(time.time()))
+
+        self._outside_bulk_write_to_elasticsearch(v for _, v in docs.iteritems())
+
+        self.sync.sync(ts)
+
+        for k, v in docs.iteritems():
+            result = self._get_cassandra_row_by_id(k)
+            self.assertIsNotNone(result)
+            self.assertEqual(v[0]['vint'], result['vint'])
+            self.assertEqual(v[0]['vstring'], result['vstring'])
+
+    def test_simultaneous(self):
+        datae = dict(vint=1, vstring="Elastic!!")
+        datac = dict(vint=99, vstring="Cassandra!!")
+        did = uuid4()
+        timestamp = 10
+
+        self._outside_write_to_cassandra(datac, did, timestamp)
+        self._outside_bulk_write_to_elasticsearch([(datae, did, timestamp)])
+
+        self.sync.sync(9)
+
+        self.assertDictEqual(datae, self._get_elasticsearch_doc_by_id(did)['_source'])
+        self.assertDictContainsSubset(datae, self._get_cassandra_row_by_id(did))
 
 
 def test_suite():

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 
 import unittest
 import time
@@ -7,6 +8,8 @@ from uuid import uuid4, UUID
 from cassandra.query import dict_factory
 from caes.client import CassandraClient
 from caes.test.utils import random_string
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class CassandraClientTestCase(unittest.TestCase):
@@ -61,6 +64,17 @@ class CassandraClientTestCase(unittest.TestCase):
                self.cclient._data_id_field_name)
 
         session.execute(query)
+
+        query = """
+            CREATE TABLE vint_by_did (
+              %s uuid,
+              vint int,
+              PRIMARY KEY(%s, vint)
+            );
+        """ % (self.cclient._data_id_field_name,
+               self.cclient._data_id_field_name)
+
+        session.execute(query)
         session.shutdown()
 
     def test_write_doc(self):
@@ -83,7 +97,7 @@ class CassandraClientTestCase(unittest.TestCase):
         results = session.execute(prepared, (did,))
         session.shutdown()
 
-        self.assertNotEqual(len(results), 0)
+        self.assertNotEqual(0, len(results))
         self.assertDictContainsSubset(data, results[0])
 
     def test_write_doc_none(self):
@@ -105,7 +119,39 @@ class CassandraClientTestCase(unittest.TestCase):
         results = session.execute(prepared, (did,))
         session.shutdown()
 
-        self.assertEqual(len(results), 0)
+        self.assertEqual(0, len(results))
+
+    def test_extra_insert_query(self):
+        data = dict(vint=1, vstring="Hi")
+        did = uuid4()
+        timestamp = int(time.time())
+
+        self.cclient._insert_query = """
+                                        INSERT INTO vint_by_did (did, vint)
+                                        VALUES (%(did)s, %(vint)s)
+                                     """
+
+        self.cclient.write([(data, did, timestamp)])
+
+        self.cclient.flush()
+
+        query = """
+            SELECT *
+            FROM vint_by_did
+            WHERE did = ?
+        """
+
+        session = self.cclient._cluster.connect(self.keyspace)
+        session.row_factory = dict_factory
+        prepared = session.prepare(query)
+        results = session.execute(prepared, (did,))
+        session.shutdown()
+
+        print results
+
+        self.assertEqual(1, len(results))
+        self.assertEqual(data.get('vint'), results[0].get('vint'))
+        self.assertEqual(did, results[0].get('did'))
 
     def test_latest(self):
         session = self.cclient._cluster.connect(self.keyspace)

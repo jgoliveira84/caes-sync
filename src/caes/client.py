@@ -21,7 +21,8 @@ class CassandraClient(object):
                  timeseries_id_field_name='id',
                  data_id_field_name='did',
                  timestamp_field_name='timestamp',
-                 cassandra_driver_params=dict()
+                 cassandra_driver_params=dict(),
+                 ttl=3600
     ):
         self.__logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class CassandraClient(object):
         self._timestamp_field_name = timestamp_field_name
         self._data_id_field_name = data_id_field_name
         self._insert_query = insertQuery
+        self._ttl = ttl
 
         self.__last = []
 
@@ -143,7 +145,7 @@ class CassandraClient(object):
                           data_values=", ".join("%(" + str(f) + ")s" for f in kv[0]))
 
             insert_schema_ts = "INSERT INTO %(ts_family)s (%(ts_id_name)s, %(ts_field_name)s, %(did_name)s) " % params
-            insert_values_ts = "VALUES (0, %(ts)s, %(did)s) "
+            insert_values_ts = "VALUES (0, %(ts)s, %(did)s) USING TTL " + str(self._ttl)
             insert_ts = insert_schema_ts + insert_values_ts
 
             insert_schema_data = "INSERT INTO %(dt_family)s (%(did_name)s, %(data_columns)s) " % params

@@ -240,6 +240,25 @@ class SyncTestCase(unittest.TestCase):
         self.assertDictEqual(datae, self._get_elasticsearch_doc_by_id(did)['_source'])
         self.assertDictContainsSubset(datae, self._get_cassandra_row_by_id(did))
 
+    def test_simultaneous_and_others(self):
+        datae = dict(vint=1, vstring="Elastic!!")
+        datac = dict(vint=99, vstring="Cassandra!!")
+        dataother = dict(vint=200, vstring="Other!!")
+        did = uuid4()
+        did_other = uuid4()
+        timestamp = 10
+
+        self._outside_write_to_cassandra(datac, did, timestamp)
+        self._outside_write_to_cassandra(dataother, did_other, timestamp)
+        self._outside_bulk_write_to_elasticsearch([(datae, did, timestamp)])
+
+        self.sync.sync(9)
+
+        self.assertDictEqual(datae, self._get_elasticsearch_doc_by_id(did)['_source'])
+        self.assertDictContainsSubset(datae, self._get_cassandra_row_by_id(did))
+
+        self.assertDictEqual(dataother, self._get_elasticsearch_doc_by_id(did_other)['_source'])
+
 
 def test_suite():
     return unittest.TestLoader().loadTestsFromTestCase(SyncTestCase)

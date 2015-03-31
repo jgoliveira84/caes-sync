@@ -16,7 +16,7 @@ class CassandraClient(object):
     def __init__(self,
                  keyspace,
                  data_column_family,
-                 insertQuery="",
+                 insert_query="",
                  timeseries_column_family='ts',
                  timeseries_id_field_name='id',
                  data_id_field_name='did',
@@ -33,7 +33,7 @@ class CassandraClient(object):
         self._data_column_family = data_column_family
         self._timestamp_field_name = timestamp_field_name
         self._data_id_field_name = data_id_field_name
-        self._insert_query = insertQuery
+        self._insert_query = insert_query
         self._ttl = ttl
 
         self.__last = []

@@ -115,7 +115,6 @@ class App(object):
         return CassandraClient(keyspace,
                                data_column_family,
                                insert_query=insert_query,
-                               select_query=select_query,
                                cassandra_driver_params=driver,
                                **casskw)
 
